@@ -1,4 +1,4 @@
-import { generateChildLogger, getLoggerContext } from "@walletconnect/logger";
+import { generateChildLogger, getLoggerContext, Logger } from "@walletconnect/logger";
 import { ICore, IStore } from "@walletconnect/types";
 import {
   getInternalError,
@@ -6,7 +6,6 @@ import {
   isSessionStruct,
   isUndefined,
 } from "@walletconnect/utils";
-import { Logger } from "pino";
 import { CORE_STORAGE_PREFIX, STORE_STORAGE_VERSION } from "../constants";
 import isEqual from "lodash.isequal";
 
@@ -51,14 +50,14 @@ export class Store<Key, Data extends Record<string, any>> extends IStore<Key, Da
       await this.restore();
 
       this.cached.forEach((value) => {
-        if (isProposalStruct(value)) {
+        if (this.getKey && value !== null && !isUndefined(value)) {
+          this.map.set(this.getKey(value), value);
+        } else if (isProposalStruct(value)) {
           // TODO(pedro) revert type casting as any
           this.map.set(value.id as any, value);
         } else if (isSessionStruct(value)) {
           // TODO(pedro) revert type casting as any
           this.map.set(value.topic as any, value);
-        } else if (this.getKey && value !== null && !isUndefined(value)) {
-          this.map.set(this.getKey(value), value);
         }
       });
 
@@ -71,8 +70,8 @@ export class Store<Key, Data extends Record<string, any>> extends IStore<Key, Da
     return getLoggerContext(this.logger);
   }
 
-  get storageKey(): string {
-    return this.storagePrefix + this.version + "//" + this.name;
+  get storageKey() {
+    return this.storagePrefix + this.version + this.core.customStoragePrefix + "//" + this.name;
   }
 
   get length() {
@@ -108,6 +107,7 @@ export class Store<Key, Data extends Record<string, any>> extends IStore<Key, Da
   };
 
   public getAll: IStore<Key, Data>["getAll"] = (filter) => {
+    this.isInitialized();
     if (!filter) return this.values;
 
     return this.values.filter((value) =>

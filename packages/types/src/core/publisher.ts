@@ -1,5 +1,5 @@
-import { Logger } from "pino";
 import { IEvents } from "@walletconnect/events";
+import { Logger } from "@walletconnect/logger";
 
 import { IRelayer, RelayerTypes } from "./relayer";
 
@@ -7,7 +7,7 @@ export declare namespace PublisherTypes {
   export interface Params {
     topic: string;
     message: string;
-    opts: Required<RelayerTypes.PublishOptions>;
+    opts: Omit<Required<RelayerTypes.PublishOptions>, "internal">;
   }
 }
 

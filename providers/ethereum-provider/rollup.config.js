@@ -1,4 +1,10 @@
-import { name, dependencies } from "./package.json";
+import { name, dependencies, peerDependencies } from "./package.json";
 import createConfig from "../../rollup.config";
-
-export default createConfig(name, Object.keys(dependencies));
+// @walletconnect/modal has dynamic imports, so we need to enable inlineDynamicImports
+export default createConfig(
+  name,
+  Object.keys({ ...dependencies, ...peerDependencies }),
+  { inlineDynamicImports: true },
+  { inlineDynamicImports: true },
+  { inlineDynamicImports: true },
+);

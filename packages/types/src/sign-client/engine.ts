@@ -9,9 +9,10 @@ import { ISignClient } from "./client";
 import { RelayerTypes } from "../core/relayer";
 import { SessionTypes } from "./session";
 import { ProposalTypes } from "./proposal";
-import { PairingTypes } from "./pairing";
+import { PairingTypes } from "../core/pairing";
 import { JsonRpcTypes } from "./jsonrpc";
 import { EventEmitter } from "events";
+import { PendingRequestTypes } from "./pendingRequest";
 
 export declare namespace EngineTypes {
   type Event =
@@ -26,7 +27,7 @@ export declare namespace EngineTypes {
   interface EventArguments {
     session_connect: {
       error?: ErrorResponse;
-      session?: Omit<SessionTypes.Struct, "requiredNamespaces">;
+      session?: SessionTypes.Struct;
     };
     session_approve: { error?: ErrorResponse };
     session_update: { error?: ErrorResponse };
@@ -50,7 +51,9 @@ export declare namespace EngineTypes {
   }
 
   interface ConnectParams {
-    requiredNamespaces: ProposalTypes.RequiredNamespaces;
+    requiredNamespaces?: ProposalTypes.RequiredNamespaces;
+    optionalNamespaces?: ProposalTypes.OptionalNamespaces;
+    sessionProperties?: ProposalTypes.SessionProperties;
     pairingTopic?: string;
     relays?: RelayerTypes.ProtocolOptions[];
   }
@@ -62,6 +65,7 @@ export declare namespace EngineTypes {
   interface ApproveParams {
     id: number;
     namespaces: SessionTypes.Namespaces;
+    sessionProperties?: ProposalTypes.SessionProperties;
     relayProtocol?: string;
   }
 
@@ -86,6 +90,7 @@ export declare namespace EngineTypes {
       params: any;
     };
     chainId: string;
+    expiry?: number;
   }
 
   interface RespondParams {
@@ -123,6 +128,11 @@ export declare namespace EngineTypes {
   }
 
   type RpcOptsMap = Record<JsonRpcTypes.WcMethod, RpcOpts>;
+
+  type EngineQueue<T> = {
+    state: "IDLE" | "ACTIVE";
+    queue: T[];
+  };
 }
 
 export abstract class IEngineEvents extends EventEmitter {
@@ -144,17 +154,22 @@ export abstract class IEngineEvents extends EventEmitter {
 // -- private method interface -------------------------------------- //
 
 export interface EnginePrivate {
-  sendRequest<M extends JsonRpcTypes.WcMethod>(
-    topic: string,
-    method: M,
-    params: JsonRpcTypes.RequestParams[M],
-  ): Promise<number>;
+  sendRequest<M extends JsonRpcTypes.WcMethod>(args: {
+    topic: string;
+    method: M;
+    params: JsonRpcTypes.RequestParams[M];
+    expiry?: number;
+    relayRpcId?: number;
+    clientRpcId?: number;
+    throwOnFailedPublish?: boolean;
+  }): Promise<number>;
 
-  sendResult<M extends JsonRpcTypes.WcMethod>(
-    id: number,
-    topic: string,
-    result: JsonRpcTypes.Results[M],
-  ): Promise<void>;
+  sendResult<M extends JsonRpcTypes.WcMethod>(args: {
+    id: number;
+    topic: string;
+    result: JsonRpcTypes.Results[M];
+    throwOnFailedPublish?: boolean;
+  }): Promise<void>;
 
   sendError(id: number, topic: string, error: JsonRpcTypes.Error): Promise<void>;
 
@@ -162,17 +177,25 @@ export interface EnginePrivate {
 
   onRelayEventResponse(event: EngineTypes.EventCallback<JsonRpcResponse>): Promise<void>;
 
-  activatePairing(topic: string): Promise<void>;
+  onRelayEventUnknownPayload(event: EngineTypes.EventCallback<any>): Promise<void>;
 
-  deleteSession(topic: string): Promise<void>;
+  deleteSession(topic: string, expirerHasDeleted?: boolean): Promise<void>;
 
-  deletePairing(topic: string): Promise<void>;
-
-  deleteProposal(id: number): Promise<void>;
+  deleteProposal(id: number, expirerHasDeleted?: boolean): Promise<void>;
 
   setExpiry(topic: string, expiry: number): Promise<void>;
 
   setProposal(id: number, proposal: ProposalTypes.Struct): Promise<void>;
+
+  setPendingSessionRequest(pendingRequest: PendingRequestTypes.Struct): Promise<void>;
+
+  deletePendingSessionRequest(
+    id: number,
+    reason: ErrorResponse,
+    expirerHasDeleted?: boolean,
+  ): Promise<void>;
+
+  cleanupDuplicatePairings(session: SessionTypes.Struct): Promise<void>;
 
   cleanup(): Promise<void>;
 
@@ -226,24 +249,9 @@ export interface EnginePrivate {
     payload: JsonRpcResult<JsonRpcTypes.Results["wc_sessionPing"]> | JsonRpcError,
   ): void;
 
-  onPairingPingRequest(
-    topic: string,
-    payload: JsonRpcRequest<JsonRpcTypes.RequestParams["wc_pairingPing"]>,
-  ): Promise<void>;
-
-  onPairingPingResponse(
-    topic: string,
-    payload: JsonRpcResult<JsonRpcTypes.Results["wc_pairingPing"]> | JsonRpcError,
-  ): void;
-
   onSessionDeleteRequest(
     topic: string,
     payload: JsonRpcRequest<JsonRpcTypes.RequestParams["wc_sessionDelete"]>,
-  ): Promise<void>;
-
-  onPairingDeleteRequest(
-    topic: string,
-    payload: JsonRpcRequest<JsonRpcTypes.RequestParams["wc_pairingDelete"]>,
   ): Promise<void>;
 
   onSessionRequest(
@@ -263,8 +271,6 @@ export interface EnginePrivate {
 
   // -- Validators ---------------------------------------------------- //
   isValidConnect(params: EngineTypes.ConnectParams): Promise<void>;
-
-  isValidPair(params: EngineTypes.PairParams): void;
 
   isValidSessionSettleRequest(params: JsonRpcTypes.RequestParams["wc_sessionSettle"]): void;
 
@@ -321,4 +327,6 @@ export abstract class IEngine {
   public abstract disconnect(params: EngineTypes.DisconnectParams): Promise<void>;
 
   public abstract find: (params: EngineTypes.FindParams) => SessionTypes.Struct[];
+
+  public abstract getPendingSessionRequests: () => PendingRequestTypes.Struct[];
 }

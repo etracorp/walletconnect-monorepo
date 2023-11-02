@@ -1,3 +1,4 @@
+/* eslint-disable no-case-declarations */
 import SignClient from "@walletconnect/sign-client";
 import { formatJsonRpcError, formatJsonRpcResult } from "@walletconnect/jsonrpc-utils";
 import { SIGNER_EVENTS } from "@walletconnect/signer-connection";
@@ -5,6 +6,9 @@ import { SignClientTypes, SessionTypes } from "@walletconnect/types";
 import { getSdkError, getChainsFromAccounts } from "@walletconnect/utils";
 import { ethers, utils } from "ethers";
 import UniversalProvider from "../../src";
+import { parseSignDocValues } from "cosmos-wallet";
+import CosmosLib from "./CosmosWallet";
+import { ACCOUNTS } from "./constants";
 
 export interface WalletClientOpts {
   privateKey: string;
@@ -22,6 +26,7 @@ export class WalletClient {
   public client?: SignClient;
   public topic?: string;
   public namespaces?: SessionTypes.Namespaces;
+  public cosmosWallet: CosmosLib;
 
   static async init(
     provider: UniversalProvider,
@@ -41,6 +46,7 @@ export class WalletClient {
     this.chainId = opts?.chainId || 123;
     this.rpcUrl = opts?.rpcUrl || "http://localhost:8545";
     this.signer = this.getWallet(opts.privateKey);
+    this.cosmosWallet = {} as CosmosLib;
   }
 
   public async changeAccount(privateKey: string) {
@@ -114,6 +120,10 @@ export class WalletClient {
     return wallet.connect(new ethers.providers.JsonRpcProvider(this.rpcUrl));
   }
 
+  private getCosmosWallet(privateKey?: string) {
+    return CosmosLib.init(ACCOUNTS.cosmos.privateKey);
+  }
+
   private parseTxParams = (payload: any) => {
     let txParams: ethers.providers.TransactionRequest = {
       from: payload.params[0].from,
@@ -154,6 +164,7 @@ export class WalletClient {
 
   private async initialize(opts?: SignClientTypes.Options) {
     this.client = await SignClient.init(opts);
+    this.cosmosWallet = await CosmosLib.init(ACCOUNTS.cosmos.privateKey);
     this.registerEventListeners();
   }
 
@@ -173,18 +184,14 @@ export class WalletClient {
       "session_proposal",
       async (proposal: SignClientTypes.EventArguments["session_proposal"]) => {
         if (typeof this.client === "undefined") throw new Error("Sign Client not inititialized");
-        const { id, requiredNamespaces, relays } = proposal.params;
+        const { id, requiredNamespaces, optionalNamespaces, relays } = proposal.params;
         const namespaces = {};
         Object.entries(requiredNamespaces).forEach(([key, value]) => {
           namespaces[key] = {
+            chains: value.chains,
             methods: value.methods,
             events: value.events,
             accounts: value.chains.map((chain) => `${chain}:${this.accounts[0]}`),
-            extension: value.extension?.map((ext) => ({
-              methods: ext.methods,
-              events: ext.events,
-              accounts: ext.chains.map((chain) => `${chain}:${this.accounts[0]}`),
-            })),
           };
         });
         const { acknowledged } = await this.client.approve({
@@ -252,6 +259,29 @@ export class WalletClient {
               //  eslint-disable-next-line no-case-declarations
               const personalMsg = request.params[0];
               result = await this.signer.signMessage(utils.arrayify(personalMsg));
+              break;
+            case "cosmos_signDirect":
+              //  eslint-disable-next-line no-case-declarations
+              const signedDirect = await this.cosmosWallet.signDirect(
+                request.params.signerAddress,
+                parseSignDocValues(request.params.signDoc),
+              );
+              result = signedDirect.signature;
+              break;
+            case "wallet_switchEthereumChain":
+              const session = this.client.session.get(topic);
+              const chainToUpdate = `eip155:${parseInt(request.params[0].chainId)}`;
+              await this.client.update({
+                topic,
+                namespaces: {
+                  ...session.namespaces,
+                  eip155: {
+                    ...session.namespaces.eip155,
+                    chains: session.namespaces.eip155.chains?.concat([chainToUpdate]),
+                  },
+                },
+              });
+              result = null;
               break;
             default:
               throw new Error(`Method not supported: ${request.method}`);

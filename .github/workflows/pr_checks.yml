@@ -12,11 +12,11 @@ jobs:
     if: github.event.action == 'opened' || github.event.action == 'synchronize'
     steps:
       - name: checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: setup-node
         uses: actions/setup-node@v3
         with:
-          node-version: 16.x
+          node-version: 18.x
           cache: "npm"
           cache-dependency-path: "**/package-lock.json"
       - name: install
@@ -31,8 +31,10 @@ jobs:
             packages/sign-client/dist
             packages/types/dist
             packages/utils/dist
+            packages/web3wallet/dist
             providers/ethereum-provider/dist
             providers/signer-connection/dist
+            providers/universal-provider/dist
 
   code_style:
     runs-on: ubuntu-latest
@@ -43,11 +45,11 @@ jobs:
           - prettier
     steps:
       - name: checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: setup-node
         uses: actions/setup-node@v3
         with:
-          node-version: 16.x
+          node-version: 18.x
           cache: "npm"
           cache-dependency-path: "**/package-lock.json"
       - name: install
@@ -63,17 +65,20 @@ jobs:
         test-prefix:
           - packages/sign-client
           - packages/core
+          - packages/web3wallet
           - packages/utils
+          - providers/universal-provider
+          - providers/ethereum-provider
     env:
       TEST_RELAY_URL: ${{ secrets.TEST_RELAY_URL }}
       TEST_PROJECT_ID: ${{ secrets.TEST_PROJECT_ID }}
     steps:
       - name: checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: setup-node
         uses: actions/setup-node@v3
         with:
-          node-version: 16.x
+          node-version: 18.x
           cache: "npm"
           cache-dependency-path: "**/package-lock.json"
       - name: install

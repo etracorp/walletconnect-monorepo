@@ -1,17 +1,16 @@
 import { expect, describe, it, beforeEach } from "vitest";
-import { getDefaultLoggerOptions } from "@walletconnect/logger";
-import pino from "pino";
+import { getDefaultLoggerOptions, pino } from "@walletconnect/logger";
 import { Core, CORE_STORAGE_PREFIX, Store, STORE_STORAGE_VERSION } from "../src";
 import { TEST_CORE_OPTIONS } from "./shared";
 import { ICore, IStore, SessionTypes } from "@walletconnect/types";
 
 const MOCK_STORE_NAME = "mock-entity";
 
-// TODO: Test persistence behavior
 describe("Store", () => {
   const logger = pino(getDefaultLoggerOptions({ level: "fatal" }));
 
   let core: ICore;
+  type MockValue = { id: string; value: string };
   let store: IStore<any, any>;
 
   beforeEach(async () => {
@@ -20,15 +19,23 @@ describe("Store", () => {
     await store.init();
   });
 
-  it("provides the expected `storageKey` format", () => {
-    const store = new Store(core, logger, MOCK_STORE_NAME);
-    expect(store.storageKey).to.equal(
-      CORE_STORAGE_PREFIX + STORE_STORAGE_VERSION + "//" + MOCK_STORE_NAME,
-    );
+  describe("storageKey", () => {
+    it("provides the expected default `storageKey` format", () => {
+      const store = new Store(core, logger, MOCK_STORE_NAME);
+      expect(store.storageKey).to.equal(
+        CORE_STORAGE_PREFIX + STORE_STORAGE_VERSION + "//" + MOCK_STORE_NAME,
+      );
+    });
+    it("provides the expected custom `storageKey` format", () => {
+      const core = new Core({ ...TEST_CORE_OPTIONS, customStoragePrefix: "test" });
+      const store = new Store(core, logger, MOCK_STORE_NAME);
+      expect(store.storageKey).to.equal(
+        CORE_STORAGE_PREFIX + STORE_STORAGE_VERSION + ":test" + "//" + MOCK_STORE_NAME,
+      );
+    });
   });
 
   describe("init", () => {
-    type MockValue = { id: string; value: string };
     const ids = ["1", "2", "3", "foo"];
     const STORAGE_KEY = CORE_STORAGE_PREFIX + STORE_STORAGE_VERSION + "//" + MOCK_STORE_NAME;
 
@@ -37,7 +44,7 @@ describe("Store", () => {
       core.storage.setItem(STORAGE_KEY, cachedValues);
     });
 
-    it("retreives from cache using getKey", async () => {
+    it("retrieves from cache using getKey", async () => {
       const store = new Store<string, MockValue>(
         core,
         logger,
@@ -46,12 +53,12 @@ describe("Store", () => {
         (val) => val.id,
       );
       await store.init();
-      for (let id of ids) {
+      for (const id of ids) {
         expect(store.keys).includes(id);
       }
     });
 
-    it("safely overwrites values when retreiving from cache using getKey", async () => {
+    it("safely overwrites values when retrieving from cache using getKey", async () => {
       const store = new Store<string, MockValue>(
         core,
         logger,

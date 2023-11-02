@@ -12,7 +12,6 @@ import { ErrorResponse } from "@walletconnect/jsonrpc-utils";
 import * as qs from "query-string";
 
 // -- constants -----------------------------------------//
-
 export const REACT_NATIVE_PRODUCT = "ReactNative";
 
 export const ENV_MAP = {
@@ -97,6 +96,17 @@ export function getRelayClientMetadata(protocol: string, version: number): Relay
 // -- rpcUrl ----------------------------------------------//
 
 export function getJavascriptOS() {
+  const env = getEnvironment();
+  // global.Platform is set by react-native-compat
+  if (
+    env === ENV_MAP.reactNative &&
+    typeof global !== "undefined" &&
+    typeof (global as any)?.Platform !== "undefined"
+  ) {
+    const { OS, Version } = (global as any).Platform;
+    return [OS, Version].join("-");
+  }
+
   const info = detect();
   if (info === null) return "unknown";
   const os = info.os ? info.os.replace(" ", "").toLowerCase() : "unknown";
@@ -125,10 +135,11 @@ export function formatRelayRpcUrl({
   sdkVersion,
   auth,
   projectId,
+  useOnCloseEvent,
 }: RelayerTypes.RpcUrlParams) {
   const splitUrl = relayUrl.split("?");
   const ua = formatUA(protocol, version, sdkVersion);
-  const params = { auth, ua, projectId };
+  const params = { auth, ua, projectId, useOnCloseEvent: useOnCloseEvent || undefined };
   const queryString = appendToQueryString(splitUrl[1] || "", params);
   return splitUrl[0] + "?" + queryString;
 }
@@ -210,26 +221,21 @@ export function capitalize(str: string) {
     .join(EMPTY_SPACE);
 }
 
-// -- time ------------------------------------------------- //
-
-export function calcExpiry(ttl: number, now?: number): number {
-  return fromMiliseconds((now || Date.now()) + toMiliseconds(ttl));
-}
-
-export function isExpired(expiry: number) {
-  return fromMiliseconds(Date.now()) >= toMiliseconds(expiry);
-}
-
 // -- promises --------------------------------------------- //
-export function createDelayedPromise<T>() {
-  const timeout = toMiliseconds(FIVE_MINUTES);
+export function createDelayedPromise<T>(
+  expiry: number = FIVE_MINUTES,
+  expireErrorMessage?: string,
+) {
+  const timeout = toMiliseconds(expiry || FIVE_MINUTES);
   let cacheResolve: undefined | ((value: T | PromiseLike<T>) => void);
   let cacheReject: undefined | ((value?: ErrorResponse) => void);
   let cacheTimeout: undefined | NodeJS.Timeout;
 
   const done = () =>
     new Promise<T>((promiseResolve, promiseReject) => {
-      cacheTimeout = setTimeout(promiseReject, timeout);
+      cacheTimeout = setTimeout(() => {
+        promiseReject(new Error(expireErrorMessage));
+      }, timeout);
       cacheResolve = promiseResolve;
       cacheReject = promiseReject;
     });
@@ -251,6 +257,23 @@ export function createDelayedPromise<T>() {
     reject,
     done,
   };
+}
+
+export function createExpiringPromise<T>(
+  promise: Promise<T>,
+  expiry: number,
+  expireErrorMessage?: string,
+) {
+  return new Promise(async (resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(expireErrorMessage)), expiry);
+    try {
+      const result = await promise;
+      resolve(result);
+    } catch (error) {
+      reject(error);
+    }
+    clearTimeout(timeout);
+  });
 }
 
 // -- expirer --------------------------------------------- //
@@ -291,8 +314,62 @@ export function parseExpirerTarget(target: string) {
   return parsed;
 }
 
+export function calcExpiry(ttl: number, now?: number): number {
+  return fromMiliseconds((now || Date.now()) + toMiliseconds(ttl));
+}
+
+export function isExpired(expiry: number) {
+  return Date.now() >= toMiliseconds(expiry);
+}
+
 // -- events ---------------------------------------------- //
 
 export function engineEvent(event: EngineTypes.Event, id?: number | string | undefined) {
   return `${event}${id ? `:${id}` : ""}`;
+}
+
+export function mergeArrays<T>(a: T[] = [], b: T[] = []): T[] {
+  return [...new Set([...a, ...b])];
+}
+
+export async function handleDeeplinkRedirect({
+  id,
+  topic,
+  wcDeepLink,
+}: {
+  id: number;
+  topic: string;
+  wcDeepLink: string;
+}) {
+  try {
+    if (!wcDeepLink) return;
+
+    const json = typeof wcDeepLink === "string" ? JSON.parse(wcDeepLink) : wcDeepLink;
+    let deeplink = json?.href;
+
+    if (typeof deeplink !== "string") return;
+
+    if (deeplink.endsWith("/")) deeplink = deeplink.slice(0, -1);
+
+    const link = `${deeplink}/wc?requestId=${id}&sessionTopic=${topic}`;
+
+    const env = getEnvironment();
+
+    if (env === ENV_MAP.browser) {
+      if (link.startsWith("https://")) {
+        window.open(link, "_blank", "noreferrer noopener");
+      } else {
+        window.open(link, "_self", "noreferrer noopener");
+      }
+    } else if (env === ENV_MAP.reactNative) {
+      // global.Linking is set by react-native-compat
+      if (typeof (global as any)?.Linking !== "undefined") {
+        await (global as any).Linking.openURL(link);
+      }
+    }
+  } catch (err) {
+    // Silent error, just log in console
+    // eslint-disable-next-line no-console
+    console.error(err);
+  }
 }

@@ -1,8 +1,7 @@
-import { Logger } from "pino";
 import { EventEmitter } from "events";
 import { HEARTBEAT_EVENTS } from "@walletconnect/heartbeat";
 import { ErrorResponse, RequestArguments } from "@walletconnect/jsonrpc-types";
-import { generateChildLogger, getLoggerContext } from "@walletconnect/logger";
+import { generateChildLogger, getLoggerContext, Logger } from "@walletconnect/logger";
 import { RelayJsonRpc } from "@walletconnect/relay-api";
 import { Watch } from "@walletconnect/time";
 import {
@@ -17,14 +16,17 @@ import {
   getInternalError,
   getRelayProtocolApi,
   getRelayProtocolName,
+  createExpiringPromise,
+  hashMessage,
+  isValidArray,
 } from "@walletconnect/utils";
 import {
   CORE_STORAGE_PREFIX,
-  RELAYER_PROVIDER_EVENTS,
   SUBSCRIBER_CONTEXT,
   SUBSCRIBER_EVENTS,
   SUBSCRIBER_STORAGE_VERSION,
   PENDING_SUB_RESOLUTION_TIMEOUT,
+  RELAYER_EVENTS,
 } from "../constants";
 import { SubscriberTopicMap } from "./topicmap";
 
@@ -39,22 +41,24 @@ export class Subscriber extends ISubscriber {
   private cached: SubscriberTypes.Active[] = [];
   private initialized = false;
   private pendingSubscriptionWatchLabel = "pending_sub_watch_label";
-  private pendingSubInterval = 20;
+  private pollingInterval = 20;
   private storagePrefix = CORE_STORAGE_PREFIX;
-
+  private subscribeTimeout = 10_000;
+  private restartInProgress = false;
+  private clientId: string;
+  private batchSubscribeTopicsLimit = 500;
   constructor(public relayer: IRelayer, public logger: Logger) {
     super(relayer, logger);
     this.relayer = relayer;
     this.logger = generateChildLogger(logger, this.name);
+    this.clientId = ""; // assigned in init
   }
 
   public init: ISubscriber["init"] = async () => {
     if (!this.initialized) {
       this.logger.trace(`Initialized`);
-      await this.restore();
-      await this.reset();
       this.registerEventListeners();
-      this.onEnable();
+      this.clientId = await this.relayer.core.crypto.getClientId();
     }
   };
 
@@ -62,8 +66,10 @@ export class Subscriber extends ISubscriber {
     return getLoggerContext(this.logger);
   }
 
-  get storageKey(): string {
-    return this.storagePrefix + this.version + "//" + this.name;
+  get storageKey() {
+    return (
+      this.storagePrefix + this.version + this.relayer.core.customStoragePrefix + "//" + this.name
+    );
   }
 
   get length() {
@@ -83,6 +89,7 @@ export class Subscriber extends ISubscriber {
   }
 
   public subscribe: ISubscriber["subscribe"] = async (topic, opts) => {
+    await this.restartToComplete();
     this.isInitialized();
     this.logger.debug(`Subscribing Topic`);
     this.logger.trace({ type: "method", method: "subscribe", params: { topic, opts } });
@@ -103,6 +110,7 @@ export class Subscriber extends ISubscriber {
   };
 
   public unsubscribe: ISubscriber["unsubscribe"] = async (topic, opts) => {
+    await this.restartToComplete();
     this.isInitialized();
     if (typeof opts?.id !== "undefined") {
       await this.unsubscribeById(topic, opts.id, opts);
@@ -116,10 +124,9 @@ export class Subscriber extends ISubscriber {
     if (this.topics.includes(topic)) return true;
 
     // wait for the subscription to resolve
-    return await new Promise((resolve, reject) => {
+    const exists = await new Promise<boolean>((resolve, reject) => {
       const watch = new Watch();
       watch.start(this.pendingSubscriptionWatchLabel);
-
       const interval = setInterval(() => {
         if (!this.pending.has(topic) && this.topics.includes(topic)) {
           clearInterval(interval);
@@ -129,10 +136,11 @@ export class Subscriber extends ISubscriber {
         if (watch.elapsed(this.pendingSubscriptionWatchLabel) >= PENDING_SUB_RESOLUTION_TIMEOUT) {
           clearInterval(interval);
           watch.stop(this.pendingSubscriptionWatchLabel);
-          reject(false);
+          reject(new Error("Subscription resolution timeout"));
         }
-      }, this.pendingSubInterval);
-    });
+      }, this.pollingInterval);
+    }).catch(() => false);
+    return exists;
   };
 
   public on: ISubscriber["on"] = (event, listener) => {
@@ -173,7 +181,6 @@ export class Subscriber extends ISubscriber {
     this.cached = this.values;
     this.subscriptions.clear();
     this.topicMap.clear();
-    this.initialized = false;
   }
 
   private async unsubscribeByTopic(topic: string, opts?: RelayerTypes.UnsubscribeOptions) {
@@ -208,7 +215,41 @@ export class Subscriber extends ISubscriber {
     };
     this.logger.debug(`Outgoing Relay Payload`);
     this.logger.trace({ type: "payload", direction: "outgoing", request });
-    return await this.relayer.provider.request(request);
+    try {
+      const subscribe = await createExpiringPromise(
+        this.relayer.request(request),
+        this.subscribeTimeout,
+      );
+      await subscribe;
+    } catch (err) {
+      this.logger.debug(`Outgoing Relay Subscribe Payload stalled`);
+      this.relayer.events.emit(RELAYER_EVENTS.connection_stalled);
+    }
+    return hashMessage(topic + this.clientId);
+  }
+
+  private async rpcBatchSubscribe(subscriptions: SubscriberTypes.Params[]) {
+    if (!subscriptions.length) return;
+    const relay = subscriptions[0].relay;
+    const api = getRelayProtocolApi(relay.protocol);
+    const request: RequestArguments<RelayJsonRpc.BatchSubscribeParams> = {
+      method: api.batchSubscribe,
+      params: {
+        topics: subscriptions.map((s) => s.topic),
+      },
+    };
+    this.logger.debug(`Outgoing Relay Payload`);
+    this.logger.trace({ type: "payload", direction: "outgoing", request });
+    try {
+      const subscribe = await createExpiringPromise(
+        this.relayer.request(request),
+        this.subscribeTimeout,
+      );
+      return await subscribe;
+    } catch (err) {
+      this.logger.debug(`Outgoing Relay Payload stalled`);
+      this.relayer.events.emit(RELAYER_EVENTS.connection_stalled);
+    }
   }
 
   private rpcUnsubscribe(topic: string, id: string, relay: RelayerTypes.ProtocolOptions) {
@@ -222,7 +263,7 @@ export class Subscriber extends ISubscriber {
     };
     this.logger.debug(`Outgoing Relay Payload`);
     this.logger.trace({ type: "payload", direction: "outgoing", request });
-    return this.relayer.provider.request(request);
+    return this.relayer.request(request);
   }
 
   private onSubscribe(id: string, params: SubscriberTypes.Params) {
@@ -230,9 +271,12 @@ export class Subscriber extends ISubscriber {
     this.pending.delete(params.topic);
   }
 
-  private onResubscribe(id: string, params: SubscriberTypes.Params) {
-    this.addSubscription(id, { ...params, id });
-    this.pending.delete(params.topic);
+  private onBatchSubscribe(subscriptions: SubscriberTypes.Active[]) {
+    if (!subscriptions.length) return;
+    subscriptions.forEach((subscription) => {
+      this.setSubscription(subscription.id, { ...subscription });
+      this.pending.delete(subscription.topic);
+    });
   }
 
   private async onUnsubscribe(topic: string, id: string, reason: ErrorResponse) {
@@ -293,16 +337,27 @@ export class Subscriber extends ISubscriber {
     } as SubscriberEvents.Deleted);
   }
 
+  private restart = async () => {
+    this.restartInProgress = true;
+    await this.restore();
+    await this.reset();
+    this.restartInProgress = false;
+  };
+
   private async persist() {
     await this.setRelayerSubscriptions(this.values);
     this.events.emit(SUBSCRIBER_EVENTS.sync);
   }
 
   private async reset() {
-    if (!this.cached.length) return;
-    await Promise.all(
-      this.cached.map(async (subscription) => await this.resubscribe(subscription)),
-    );
+    if (this.cached.length) {
+      const batches = Math.ceil(this.cached.length / this.batchSubscribeTopicsLimit);
+      for (let i = 0; i < batches; i++) {
+        const batch = this.cached.splice(0, this.batchSubscribeTopicsLimit);
+        await this.batchSubscribe(batch);
+      }
+    }
+    this.events.emit(SUBSCRIBER_EVENTS.resubscribed);
   }
 
   private async restore() {
@@ -313,6 +368,7 @@ export class Subscriber extends ISubscriber {
       if (this.subscriptions.size) {
         const { message } = getInternalError("RESTORE_WILL_OVERRIDE", this.name);
         this.logger.error(message);
+        this.logger.error(`${this.name}: ${JSON.stringify(this.values)}`);
         throw new Error(message);
       }
       this.cached = persisted;
@@ -324,18 +380,16 @@ export class Subscriber extends ISubscriber {
     }
   }
 
-  private async resubscribe(subscription: SubscriberTypes.Active) {
-    if (!this.ids.includes(subscription.id)) {
-      const { topic, relay } = subscription;
-      const params = { topic, relay };
-      this.pending.set(params.topic, params);
-      const id = await this.rpcSubscribe(params.topic, params.relay);
-      this.onResubscribe(id, params);
-    }
+  private async batchSubscribe(subscriptions: SubscriberTypes.Params[]) {
+    if (!subscriptions.length) return;
+    const result = (await this.rpcBatchSubscribe(subscriptions)) as string[];
+    if (!isValidArray(result)) return;
+    this.onBatchSubscribe(result.map((id, i) => ({ ...subscriptions[i], id })));
   }
 
   private async onConnect() {
-    await this.reset();
+    if (this.restartInProgress) return;
+    await this.restart();
     this.onEnable();
   }
 
@@ -343,21 +397,25 @@ export class Subscriber extends ISubscriber {
     this.onDisable();
   }
 
-  private checkPending() {
-    this.pending.forEach(async (params) => {
-      const id = await this.rpcSubscribe(params.topic, params.relay);
-      this.onSubscribe(id, params);
+  private async checkPending() {
+    if (!this.initialized || this.relayer.transportExplicitlyClosed) {
+      return;
+    }
+    const pendingSubscriptions: SubscriberTypes.Params[] = [];
+    this.pending.forEach((params) => {
+      pendingSubscriptions.push(params);
     });
+    await this.batchSubscribe(pendingSubscriptions);
   }
 
   private registerEventListeners() {
-    this.relayer.core.heartbeat.on(HEARTBEAT_EVENTS.pulse, () => {
-      this.checkPending();
+    this.relayer.core.heartbeat.on(HEARTBEAT_EVENTS.pulse, async () => {
+      await this.checkPending();
     });
-    this.relayer.provider.on(RELAYER_PROVIDER_EVENTS.connect, async () => {
+    this.relayer.on(RELAYER_EVENTS.connect, async () => {
       await this.onConnect();
     });
-    this.relayer.provider.on(RELAYER_PROVIDER_EVENTS.disconnect, () => {
+    this.relayer.on(RELAYER_EVENTS.disconnect, () => {
       this.onDisconnect();
     });
     this.events.on(SUBSCRIBER_EVENTS.created, async (createdEvent: SubscriberEvents.Created) => {
@@ -379,5 +437,18 @@ export class Subscriber extends ISubscriber {
       const { message } = getInternalError("NOT_INITIALIZED", this.name);
       throw new Error(message);
     }
+  }
+
+  private async restartToComplete() {
+    if (!this.restartInProgress) return;
+
+    await new Promise<void>((resolve) => {
+      const interval = setInterval(() => {
+        if (!this.restartInProgress) {
+          clearInterval(interval);
+          resolve();
+        }
+      }, this.pollingInterval);
+    });
   }
 }

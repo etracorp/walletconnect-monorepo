@@ -6,28 +6,43 @@ import {
   ProposalTypes,
   SessionTypes,
 } from "@walletconnect/types";
-import { TEST_RELAY_OPTIONS, TEST_NAMESPACES, TEST_REQUIRED_NAMESPACES } from "./values";
+import { throttle } from "./../shared";
+import {
+  TEST_RELAY_OPTIONS,
+  TEST_NAMESPACES,
+  TEST_REQUIRED_NAMESPACES,
+  TEST_OPTIONAL_NAMESPACES,
+  TEST_SESSION_PROPERTIES,
+  TEST_SESSION_PROPERTIES_APPROVE,
+} from "./values";
 import { Clients } from "./init";
 import { expect } from "vitest";
 
 export interface TestConnectParams {
   requiredNamespaces?: ProposalTypes.RequiredNamespaces;
+  optionalNamespaces?: ProposalTypes.OptionalNamespaces;
   namespaces?: SessionTypes.Namespaces;
+  sessionProperties?: ProposalTypes.SessionProperties;
   relays?: RelayerTypes.ProtocolOptions[];
   pairingTopic?: string;
+  qrCodeScanLatencyMs?: number;
 }
 
 export async function testConnectMethod(clients: Clients, params?: TestConnectParams) {
+  const start = Date.now();
   const { A, B } = clients;
 
   const connectParams: EngineTypes.ConnectParams = {
     requiredNamespaces: params?.requiredNamespaces || TEST_REQUIRED_NAMESPACES,
+    optionalNamespaces: params?.optionalNamespaces || TEST_OPTIONAL_NAMESPACES,
+    sessionProperties: params?.sessionProperties || TEST_SESSION_PROPERTIES,
     relays: params?.relays || undefined,
     pairingTopic: params?.pairingTopic || undefined,
   };
 
   const approveParams: Omit<EngineTypes.ApproveParams, "id"> = {
     namespaces: params?.namespaces || TEST_NAMESPACES,
+    sessionProperties: TEST_SESSION_PROPERTIES_APPROVE,
   };
 
   // We need to kick off the promise that binds the listener for `session_proposal` before `A.connect()`
@@ -36,7 +51,8 @@ export async function testConnectMethod(clients: Clients, params?: TestConnectPa
     B.once("session_proposal", async (proposal) => {
       try {
         expect(proposal.params.requiredNamespaces).to.eql(connectParams.requiredNamespaces);
-
+        expect(proposal.params.optionalNamespaces).to.eql(connectParams.optionalNamespaces);
+        expect(proposal.params.sessionProperties).to.eql(TEST_SESSION_PROPERTIES);
         const { acknowledged } = await B.approve({
           id: proposal.id,
           ...approveParams,
@@ -51,13 +67,30 @@ export async function testConnectMethod(clients: Clients, params?: TestConnectPa
     });
   });
 
-  const { uri, approval } = await A.connect(connectParams);
+  const connect: Promise<{
+    uri?: string | undefined;
+    approval: () => Promise<SessionTypes.Struct>;
+  }> = new Promise(async function (resolve, reject) {
+    const connectTimeoutMs = 800_000;
+    const timeout = setTimeout(() => {
+      return reject(new Error(`Connect timed out after ${connectTimeoutMs}ms - ${A.core.name}`));
+    }, connectTimeoutMs);
+    const result = await A.connect(connectParams);
+    clearTimeout(timeout);
+    return resolve(result);
+  });
+
+  const { uri, approval } = await connect;
+  const clientAConnectLatencyMs = Date.now() - start;
 
   let pairingA: PairingTypes.Struct | undefined;
   let pairingB: PairingTypes.Struct | undefined;
 
   if (!connectParams.pairingTopic) {
+    // This is a new pairing. Let's apply a timeout to mimic
+    // QR code scanning
     if (!uri) throw new Error("uri is missing");
+    if (params?.qrCodeScanLatencyMs) await throttle(params?.qrCodeScanLatencyMs);
 
     const uriParams = parseUri(uri);
 
@@ -74,14 +107,24 @@ export async function testConnectMethod(clients: Clients, params?: TestConnectPa
   let sessionA: SessionTypes.Struct | undefined;
   let sessionB: SessionTypes.Struct | undefined;
 
+  const pair: (uri: string) => Promise<PairingTypes.Struct> = (uri: string) =>
+    new Promise(async function (resolve, reject) {
+      const pairTimeoutMs = 800_000;
+      const timeout = setTimeout(() => {
+        return reject(new Error(`Pair timed out after ${pairTimeoutMs}ms`));
+      }, pairTimeoutMs);
+      const result = await B.pair({ uri });
+      clearTimeout(timeout);
+      return resolve(result);
+    });
   await Promise.all([
     resolveSessionProposal,
     new Promise<void>(async (resolve, reject) => {
-      // immediatelly resolve if pairingTopic is provided
+      // immediately resolve if pairingTopic is provided
       if (connectParams.pairingTopic) return resolve();
       try {
         if (uri) {
-          pairingB = await B.pair({ uri });
+          pairingB = await pair(uri);
           if (!pairingA) throw new Error("pairingA is missing");
           expect(pairingB.topic).to.eql(pairingA.topic);
           expect(pairingB.relay).to.eql(pairingA.relay);
@@ -105,6 +148,7 @@ export async function testConnectMethod(clients: Clients, params?: TestConnectPa
       }
     }),
   ]);
+  const settlePairingLatencyMs = Date.now() - start - (params?.qrCodeScanLatencyMs || 0);
 
   if (!sessionA) throw new Error("expect session A to be defined");
   if (!sessionB) throw new Error("expect session B to be defined");
@@ -117,10 +161,9 @@ export async function testConnectMethod(clients: Clients, params?: TestConnectPa
   // namespaces
   expect(sessionA.namespaces).to.eql(approveParams.namespaces);
   expect(sessionA.namespaces).to.eql(sessionB.namespaces);
+  expect(sessionA.sessionProperties).to.eql(TEST_SESSION_PROPERTIES_APPROVE);
   // expiry
-  expect(sessionA.expiry).to.eql(sessionB.expiry);
-  // acknowledged
-  expect(sessionA.acknowledged).to.eql(sessionB.acknowledged);
+  expect(Math.abs(sessionA.expiry - sessionB.expiry)).to.be.lessThan(5);
   // participants
   expect(sessionA.self).to.eql(sessionB.peer);
   expect(sessionA.peer).to.eql(sessionB.self);
@@ -150,8 +193,8 @@ export async function testConnectMethod(clients: Clients, params?: TestConnectPa
   // metadata
   expect(pairingA.peerMetadata).to.eql(sessionA.peer.metadata);
   expect(pairingB.peerMetadata).to.eql(sessionB.peer.metadata);
-
-  return { pairingA, sessionA };
+  await throttle(200); // allow for relay to update
+  return { pairingA, sessionA, clientAConnectLatencyMs, settlePairingLatencyMs };
 }
 
 export function batchArray(array: any[], size: number) {

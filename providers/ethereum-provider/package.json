@@ -1,7 +1,7 @@
 {
   "name": "@walletconnect/ethereum-provider",
   "description": "Ethereum Provider for WalletConnect Protocol",
-  "version": "2.0.0-rc.2",
+  "version": "2.10.4",
   "author": "WalletConnect, Inc. <walletconnect.com>",
   "homepage": "https://github.com/walletconnect/walletconnect-monorepo/",
   "repository": {
@@ -14,6 +14,14 @@
   "module": "dist/index.es.js",
   "unpkg": "dist/index.umd.js",
   "types": "dist/types/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "module": "./dist/index.es.js",
+      "default": "./dist/index.cjs.js"
+    }
+  },
   "files": [
     "dist"
   ],
@@ -30,24 +38,34 @@
     "test:pre": "rm -rf ./test/test.db",
     "test:run": "vitest run --dir test",
     "test": "npm run test:pre; npm run test:run",
+    "test:ignoreUnhandled": "npm run test:pre; npm run test:run -- --dangerouslyIgnoreUnhandledErrors",
     "lint": "eslint -c '../../.eslintrc' --fix './src/**/*.ts'",
     "prettier": "prettier --check '{src,test}/**/*.{js,ts,jsx,tsx}'"
   },
   "dependencies": {
-    "@walletconnect/jsonrpc-http-connection": "1.0.3",
-    "@walletconnect/jsonrpc-provider": "1.0.5",
-    "@walletconnect/jsonrpc-types": "1.0.1",
-    "@walletconnect/jsonrpc-utils": "1.0.3",
-    "@walletconnect/sign-client": "2.0.0-rc.2",
-    "@walletconnect/signer-connection": "2.0.0-rc.2",
-    "@walletconnect/types": "2.0.0-rc.2",
-    "@walletconnect/utils": "2.0.0-rc.2",
-    "eip1193-provider": "1.0.1",
+    "@walletconnect/jsonrpc-http-connection": "^1.0.7",
+    "@walletconnect/jsonrpc-provider": "^1.0.13",
+    "@walletconnect/jsonrpc-types": "^1.0.3",
+    "@walletconnect/jsonrpc-utils": "^1.0.8",
+    "@walletconnect/sign-client": "2.10.4",
+    "@walletconnect/types": "2.10.4",
+    "@walletconnect/universal-provider": "2.10.4",
+    "@walletconnect/utils": "2.10.4",
+    "events": "^3.3.0"
+  },
+  "devDependencies": {
+    "@walletconnect/modal": "^2.4.3",
     "ethereum-test-network": "0.1.6",
     "ethers": "5.6.9",
-    "pino": "6.7.0",
-    "pino-pretty": "4.3.0",
-    "uint8arrays": "3.1.0",
+    "uint8arrays": "^3.1.0",
     "web3": "1.7.5"
+  },
+  "peerDependencies": {
+    "@walletconnect/modal": ">=2"
+  },
+  "peerDependenciesMeta": {
+    "@walletconnect/modal": {
+      "optional": true
+    }
   }
 }

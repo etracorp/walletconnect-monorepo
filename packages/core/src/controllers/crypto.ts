@@ -1,4 +1,4 @@
-import { generateChildLogger, getLoggerContext } from "@walletconnect/logger";
+import { generateChildLogger, getLoggerContext, Logger } from "@walletconnect/logger";
 import { safeJsonParse, safeJsonStringify } from "@walletconnect/safe-json";
 import { ICore, ICrypto, IKeyChain } from "@walletconnect/types";
 import * as relayAuth from "@walletconnect/relay-auth";
@@ -14,8 +14,12 @@ import {
   validateEncoding,
   validateDecoding,
   isTypeOneEnvelope,
+  deserialize,
+  decodeTypeByte,
+  BASE16,
 } from "@walletconnect/utils";
-import { Logger } from "pino";
+import { toString } from "uint8arrays";
+
 import { CRYPTO_CONTEXT, CRYPTO_CLIENT_SEED, CRYPTO_JWT_TTL } from "../constants";
 import { KeyChain } from "./keychain";
 
@@ -122,10 +126,29 @@ export class Crypto implements ICrypto {
       const peerPublicKey = params.senderPublicKey;
       topic = await this.generateSharedKey(selfPublicKey, peerPublicKey);
     }
-    const symKey = this.getSymKey(topic);
-    const message = decrypt({ symKey, encoded });
-    const payload = safeJsonParse(message);
-    return payload;
+    try {
+      const symKey = this.getSymKey(topic);
+      const message = decrypt({ symKey, encoded });
+      const payload = safeJsonParse(message);
+      return payload;
+    } catch (error) {
+      this.logger.error(
+        `Failed to decode message from topic: '${topic}', clientId: '${await this.getClientId()}'`,
+      );
+      this.logger.error(error);
+    }
+  };
+
+  public getPayloadType: ICrypto["getPayloadType"] = (encoded) => {
+    const deserialized = deserialize(encoded);
+    return decodeTypeByte(deserialized.type);
+  };
+
+  public getPayloadSenderPublicKey: ICrypto["getPayloadSenderPublicKey"] = (encoded) => {
+    const deserialized = deserialize(encoded);
+    return deserialized.senderPublicKey
+      ? toString(deserialized.senderPublicKey, BASE16)
+      : undefined;
   };
 
   // ---------- Private ----------------------------------------------- //

@@ -1,6 +1,6 @@
-import { Logger } from "pino";
 import { IEvents } from "@walletconnect/events";
-import { IJsonRpcProvider } from "@walletconnect/jsonrpc-types";
+import { IJsonRpcProvider, JsonRpcPayload, RequestArguments } from "@walletconnect/jsonrpc-types";
+import { Logger } from "@walletconnect/logger";
 
 import { ICore } from "./core";
 import { IMessageTracker } from "./messages";
@@ -12,12 +12,15 @@ export declare namespace RelayerTypes {
     protocol: string;
     data?: string;
   }
-
   export interface PublishOptions {
     relay?: ProtocolOptions;
     ttl?: number;
     prompt?: boolean;
     tag?: number;
+    id?: number;
+    internal?: {
+      throwOnFailedPublish?: boolean;
+    };
   }
 
   export interface SubscribeOptions {
@@ -31,9 +34,15 @@ export declare namespace RelayerTypes {
 
   export type RequestOptions = PublishOptions | SubscribeOptions | UnsubscribeOptions;
 
+  export interface PublishPayload {
+    topic: string;
+    message: string;
+    opts?: RelayerTypes.PublishOptions;
+  }
   export interface MessageEvent {
     topic: string;
     message: string;
+    publishedAt: number;
   }
 
   export interface RpcUrlParams {
@@ -43,6 +52,7 @@ export declare namespace RelayerTypes {
     relayUrl: string;
     sdkVersion: string;
     projectId?: string;
+    useOnCloseEvent?: boolean;
   }
 }
 
@@ -75,6 +85,8 @@ export abstract class IRelayer extends IEvents {
 
   public abstract name: string;
 
+  public abstract transportExplicitlyClosed: boolean;
+
   public abstract readonly context: string;
 
   public abstract readonly connected: boolean;
@@ -96,7 +108,13 @@ export abstract class IRelayer extends IEvents {
     opts?: RelayerTypes.PublishOptions,
   ): Promise<void>;
 
+  public abstract request(request: RequestArguments): Promise<JsonRpcPayload>;
+
   public abstract subscribe(topic: string, opts?: RelayerTypes.SubscribeOptions): Promise<string>;
 
   public abstract unsubscribe(topic: string, opts?: RelayerTypes.UnsubscribeOptions): Promise<void>;
+  public abstract transportClose(): Promise<void>;
+  public abstract transportOpen(relayUrl?: string): Promise<void>;
+  public abstract restartTransport(relayUrl?: string): Promise<void>;
+  public abstract confirmOnlineStateOrThrow(): Promise<void>;
 }

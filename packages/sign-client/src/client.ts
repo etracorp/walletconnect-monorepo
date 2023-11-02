@@ -3,13 +3,13 @@ import {
   generateChildLogger,
   getDefaultLoggerOptions,
   getLoggerContext,
+  pino,
 } from "@walletconnect/logger";
 import { SignClientTypes, ISignClient, ISignClientEvents, EngineTypes } from "@walletconnect/types";
 import { getAppMetadata } from "@walletconnect/utils";
 import { EventEmitter } from "events";
-import pino from "pino";
 import { SIGN_CLIENT_DEFAULT, SIGN_CLIENT_PROTOCOL, SIGN_CLIENT_VERSION } from "./constants";
-import { Engine, Expirer, JsonRpcHistory, Pairing, Proposal, Session } from "./controllers";
+import { Engine, PendingRequest, Proposal, Session } from "./controllers";
 
 export class SignClient extends ISignClient {
   public readonly protocol = SIGN_CLIENT_PROTOCOL;
@@ -21,11 +21,9 @@ export class SignClient extends ISignClient {
   public logger: ISignClient["logger"];
   public events: ISignClient["events"] = new EventEmitter();
   public engine: ISignClient["engine"];
-  public pairing: ISignClient["pairing"];
   public session: ISignClient["session"];
   public proposal: ISignClient["proposal"];
-  public history: ISignClient["history"];
-  public expirer: ISignClient["expirer"];
+  public pendingRequest: ISignClient["pendingRequest"];
 
   static async init(opts?: SignClientTypes.Options) {
     const client = new SignClient(opts);
@@ -47,16 +45,18 @@ export class SignClient extends ISignClient {
 
     this.core = opts?.core || new Core(opts);
     this.logger = generateChildLogger(logger, this.name);
-    this.pairing = new Pairing(this.core, this.logger);
     this.session = new Session(this.core, this.logger);
     this.proposal = new Proposal(this.core, this.logger);
-    this.history = new JsonRpcHistory(this.core, this.logger);
-    this.expirer = new Expirer(this.core, this.logger);
+    this.pendingRequest = new PendingRequest(this.core, this.logger);
     this.engine = new Engine(this);
   }
 
   get context() {
     return getLoggerContext(this.logger);
+  }
+
+  get pairing() {
+    return this.core.pairing.pairings;
   }
 
   // ---------- Events ----------------------------------------------- //
@@ -75,6 +75,10 @@ export class SignClient extends ISignClient {
 
   public removeListener: ISignClientEvents["removeListener"] = (name, listener) => {
     return this.events.removeListener(name, listener);
+  };
+
+  public removeAllListeners: ISignClientEvents["removeAllListeners"] = (name) => {
+    return this.events.removeAllListeners(name);
   };
 
   // ---------- Engine ----------------------------------------------- //
@@ -187,21 +191,29 @@ export class SignClient extends ISignClient {
     }
   };
 
+  public getPendingSessionRequests: ISignClient["getPendingSessionRequests"] = () => {
+    try {
+      return this.engine.getPendingSessionRequests();
+    } catch (error: any) {
+      this.logger.error(error.message);
+      throw error;
+    }
+  };
+
   // ---------- Private ----------------------------------------------- //
 
   private async initialize() {
     this.logger.trace(`Initialized`);
     try {
       await this.core.start();
-      await this.pairing.init();
       await this.session.init();
       await this.proposal.init();
-      await this.history.init();
-      await this.expirer.init();
+      await this.pendingRequest.init();
       await this.engine.init();
-      this.logger.info(`SignClient Initilization Success`);
+      this.core.verify.init({ verifyUrl: this.metadata.verifyUrl });
+      this.logger.info(`SignClient Initialization Success`);
     } catch (error: any) {
-      this.logger.info(`SignClient Initilization Failure`);
+      this.logger.info(`SignClient Initialization Failure`);
       this.logger.error(error.message);
       throw error;
     }

@@ -58,6 +58,7 @@ export const TEST_WALLET_CLIENT_OPTS = {
   rpcUrl: RPC_URL,
   privateKey: ACCOUNTS.a.privateKey,
   relayUrl: TEST_RELAY_URL,
+  projectId: process.env.TEST_PROJECT_ID,
   metadata: TEST_WALLET_METADATA,
 };
 
@@ -73,3 +74,12 @@ export const TEST_SIGN_TRANSACTION = {
   value: "1000000000",
   gas: 2000000,
 };
+
+export const TEST_ETHEREUM_METHODS_REQUIRED = ["eth_sendTransaction", "personal_sign"];
+
+export const TEST_ETHEREUM_METHODS_OPTIONAL = [
+  "eth_sendTransaction",
+  "eth_signTransaction",
+  "personal_sign",
+  "eth_signTypedData",
+];

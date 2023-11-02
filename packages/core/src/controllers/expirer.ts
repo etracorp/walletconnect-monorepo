@@ -1,12 +1,11 @@
 import { HEARTBEAT_EVENTS } from "@walletconnect/heartbeat";
-import { generateChildLogger, getLoggerContext } from "@walletconnect/logger";
+import { generateChildLogger, getLoggerContext, Logger } from "@walletconnect/logger";
 import { toMiliseconds } from "@walletconnect/time";
 import { ExpirerTypes, ICore, IExpirer } from "@walletconnect/types";
 import { getInternalError, formatIdTarget, formatTopicTarget } from "@walletconnect/utils";
 import { EventEmitter } from "events";
-import { Logger } from "pino";
 import {
-  SIGN_CLIENT_STORAGE_PREFIX,
+  CORE_STORAGE_PREFIX,
   EXPIRER_CONTEXT,
   EXPIRER_EVENTS,
   EXPIRER_STORAGE_VERSION,
@@ -21,7 +20,7 @@ export class Expirer extends IExpirer {
   private cached: ExpirerTypes.Expiration[] = [];
   private initialized = false;
 
-  private storagePrefix = SIGN_CLIENT_STORAGE_PREFIX;
+  private storagePrefix = CORE_STORAGE_PREFIX;
 
   constructor(public core: ICore, public logger: Logger) {
     super(core, logger);
@@ -43,8 +42,8 @@ export class Expirer extends IExpirer {
     return getLoggerContext(this.logger);
   }
 
-  get storageKey(): string {
-    return this.storagePrefix + this.version + "//" + this.name;
+  get storageKey() {
+    return this.storagePrefix + this.version + this.core.customStoragePrefix + "//" + this.name;
   }
 
   get length(): number {
@@ -90,9 +89,9 @@ export class Expirer extends IExpirer {
 
   public del: IExpirer["del"] = (key) => {
     this.isInitialized();
-    const target = this.formatTarget(key);
-    const exists = this.has(target);
+    const exists = this.has(key);
     if (exists) {
+      const target = this.formatTarget(key);
       const expiration = this.getExpiration(target);
       this.expirations.delete(target);
       this.events.emit(EXPIRER_EVENTS.deleted, {
@@ -188,6 +187,8 @@ export class Expirer extends IExpirer {
   }
 
   private checkExpirations(): void {
+    // avoid auto expiring if the relayer is not connected
+    if (!this.core.relayer.connected) return;
     this.expirations.forEach((expiration, target) => this.checkExpiry(target, expiration));
   }
 

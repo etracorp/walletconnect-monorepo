@@ -1,11 +1,12 @@
 import { formatJsonRpcRequest, isJsonRpcError } from "@walletconnect/jsonrpc-utils";
-import { generateChildLogger, getLoggerContext } from "@walletconnect/logger";
+import { generateChildLogger, getLoggerContext, Logger } from "@walletconnect/logger";
 import { IJsonRpcHistory, JsonRpcRecord, RequestEvent, ICore } from "@walletconnect/types";
-import { getInternalError } from "@walletconnect/utils";
+import { calcExpiry, getInternalError } from "@walletconnect/utils";
 import { EventEmitter } from "events";
-import { Logger } from "pino";
+import { THIRTY_DAYS, toMiliseconds } from "@walletconnect/time";
+import { HEARTBEAT_EVENTS } from "@walletconnect/heartbeat";
 import {
-  SIGN_CLIENT_STORAGE_PREFIX,
+  CORE_STORAGE_PREFIX,
   HISTORY_CONTEXT,
   HISTORY_EVENTS,
   HISTORY_STORAGE_VERSION,
@@ -16,10 +17,10 @@ export class JsonRpcHistory extends IJsonRpcHistory {
   public events = new EventEmitter();
   public name = HISTORY_CONTEXT;
   public version = HISTORY_STORAGE_VERSION;
+
   private cached: JsonRpcRecord[] = [];
   private initialized = false;
-
-  private storagePrefix = SIGN_CLIENT_STORAGE_PREFIX;
+  private storagePrefix = CORE_STORAGE_PREFIX;
 
   constructor(public core: ICore, public logger: Logger) {
     super(core, logger);
@@ -41,8 +42,8 @@ export class JsonRpcHistory extends IJsonRpcHistory {
     return getLoggerContext(this.logger);
   }
 
-  get storageKey(): string {
-    return this.storagePrefix + this.version + "//" + this.name;
+  get storageKey() {
+    return this.storagePrefix + this.version + this.core.customStoragePrefix + "//" + this.name;
   }
 
   get size(): number {
@@ -81,6 +82,7 @@ export class JsonRpcHistory extends IJsonRpcHistory {
       topic,
       request: { method: request.method, params: request.params || null },
       chainId,
+      expiry: calcExpiry(THIRTY_DAYS),
     };
     this.records.set(record.id, record);
     this.events.emit(HISTORY_EVENTS.created, record);
@@ -105,11 +107,6 @@ export class JsonRpcHistory extends IJsonRpcHistory {
     this.logger.debug(`Getting record`);
     this.logger.trace({ type: "method", method: "get", topic, id });
     const record = await this.getRecord(id);
-    if (record.topic !== topic) {
-      const { message } = getInternalError("MISMATCHED_TOPIC", `${this.name}, ${id}`);
-      this.logger.error(message);
-      throw new Error(message);
-    }
     return record;
   };
 
@@ -214,6 +211,24 @@ export class JsonRpcHistory extends IJsonRpcHistory {
       this.logger.debug({ type: "event", event: eventName, record });
       this.persist();
     });
+
+    this.core.heartbeat.on(HEARTBEAT_EVENTS.pulse, () => {
+      this.cleanup();
+    });
+  }
+
+  private cleanup() {
+    try {
+      this.records.forEach((record: JsonRpcRecord) => {
+        const msToExpiry = toMiliseconds(record.expiry || 0) - Date.now();
+        if (msToExpiry <= 0) {
+          this.logger.info(`Deleting expired history log: ${record.id}`);
+          this.delete(record.topic, record.id);
+        }
+      });
+    } catch (e) {
+      this.logger.warn(e);
+    }
   }
 
   private isInitialized() {

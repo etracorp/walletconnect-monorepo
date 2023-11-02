@@ -8,6 +8,7 @@ import {
 } from "./namespaces";
 import { getSdkError, getInternalError } from "./errors";
 import { hasOverlap } from "./misc";
+import { getChainsFromNamespace } from "./caip";
 
 export type ErrorObject = { message: string; code: number } | null;
 
@@ -55,30 +56,15 @@ export function isSessionCompatible(session: SessionTypes.Struct, params: Engine
   if (!hasOverlap(paramsKeys, sessionKeys)) return false;
 
   sessionKeys.forEach((key) => {
-    const { accounts, methods, events, extension } = session.namespaces[key];
+    const { accounts, methods, events } = session.namespaces[key];
     const chains = getAccountsChains(accounts);
     const requiredNamespace = requiredNamespaces[key];
-
     if (
-      !hasOverlap(requiredNamespace.chains, chains) ||
+      !hasOverlap(getChainsFromNamespace(key, requiredNamespace), chains) ||
       !hasOverlap(requiredNamespace.methods, methods) ||
       !hasOverlap(requiredNamespace.events, events)
     ) {
       compatible = false;
-    }
-
-    if (compatible && extension) {
-      extension.forEach((extensionNamespace) => {
-        const { accounts, methods, events } = extensionNamespace;
-        const chains = getAccountsChains(accounts);
-        const overlap = requiredNamespace.extension?.find(
-          (ext) =>
-            hasOverlap(ext.chains, chains) &&
-            hasOverlap(ext.methods, methods) &&
-            hasOverlap(ext.events, events),
-        );
-        if (!overlap) compatible = false;
-      });
     }
   });
 
@@ -136,20 +122,6 @@ export function isValidController(input: any, method: string) {
   return error;
 }
 
-export function isValidExtension(namespace: any, method: string) {
-  let error: ErrorObject = null;
-  if (!isUndefined(namespace?.extension)) {
-    if (!isValidArray(namespace.extension) || !namespace.extension.length) {
-      error = getInternalError(
-        "MISSING_OR_INVALID",
-        `${method} extension should be an array of namespaces, or omitted`,
-      );
-    }
-  }
-
-  return error;
-}
-
 export function isValidNamespaceMethodsOrEvents(input: any): input is string {
   let valid = true;
   if (isValidArray(input)) {
@@ -165,44 +137,38 @@ export function isValidNamespaceMethodsOrEvents(input: any): input is string {
 
 export function isValidChains(key: string, chains: any, context: string) {
   let error: ErrorObject = null;
-  if (isValidArray(chains)) {
+
+  if (isValidArray(chains) && chains.length) {
     chains.forEach((chain: any) => {
       if (error) return;
-      if (!isValidChainId(chain) || !chain.includes(key)) {
+      if (!isValidChainId(chain)) {
         error = getSdkError(
           "UNSUPPORTED_CHAINS",
           `${context}, chain ${chain} should be a string and conform to "namespace:chainId" format`,
         );
       }
     });
-  } else {
+  } else if (!isValidChainId(key)) {
     error = getSdkError(
       "UNSUPPORTED_CHAINS",
-      `${context}, chains ${chains} should be an array of strings conforming to "namespace:chainId" format`,
+      `${context}, chains must be defined as "namespace:chainId" e.g. "eip155:1": {...} in the namespace key OR as an array of CAIP-2 chainIds e.g. eip155: { chains: ["eip155:1", "eip155:5"] }`,
     );
   }
 
   return error;
 }
 
-export function isValidNamespaceChains(namespaces: any, method: string) {
+export function isValidNamespaceChains(namespaces: any, method: string, type: string) {
   let error: ErrorObject = null;
   Object.entries(namespaces).forEach(([key, namespace]: [string, any]) => {
     if (error) return;
-    const validChainsError = isValidChains(key, namespace?.chains, `${method} requiredNamespace`);
-    const validExtensionError = isValidExtension(namespace, method);
+    const validChainsError = isValidChains(
+      key,
+      getChainsFromNamespace(key, namespace),
+      `${method} ${type}`,
+    );
     if (validChainsError) {
       error = validChainsError;
-    } else if (validExtensionError) {
-      error = validExtensionError;
-    } else if (namespace.extension) {
-      namespace.extension.forEach((extension: any) => {
-        if (error) return;
-        const validChainsError = isValidChains(key, extension.chains, `${method} extension`);
-        if (validChainsError) {
-          error = validChainsError;
-        }
-      });
     }
   });
 
@@ -236,19 +202,8 @@ export function isValidNamespaceAccounts(input: any, method: string) {
   Object.values(input).forEach((namespace: any) => {
     if (error) return;
     const validAccountsError = isValidAccounts(namespace?.accounts, `${method} namespace`);
-    const validExtensionError = isValidExtension(namespace, method);
     if (validAccountsError) {
       error = validAccountsError;
-    } else if (validExtensionError) {
-      error = validExtensionError;
-    } else if (namespace.extension) {
-      namespace.extension.forEach((extension: any) => {
-        if (error) return;
-        const validAccountsError = isValidAccounts(extension.accounts, `${method} extension`);
-        if (validAccountsError) {
-          error = validAccountsError;
-        }
-      });
     }
   });
 
@@ -277,40 +232,29 @@ export function isValidNamespaceActions(input: any, method: string) {
   Object.values(input).forEach((namespace: any) => {
     if (error) return;
     const validActionsError = isValidActions(namespace, `${method}, namespace`);
-    const validExtensionError = isValidExtension(namespace, method);
     if (validActionsError) {
       error = validActionsError;
-    } else if (validExtensionError) {
-      error = validExtensionError;
-    } else if (namespace.extension) {
-      namespace.extension.forEach((extension: any) => {
-        if (error) return;
-        const validActionsError = isValidActions(extension, `${method}, extension`);
-        if (validActionsError) {
-          error = validActionsError;
-        }
-      });
     }
   });
 
   return error;
 }
 
-export function isValidRequiredNamespaces(input: any, method: string) {
+export function isValidRequiredNamespaces(input: any, method: string, type: string) {
   let error: ErrorObject = null;
   if (input && isValidObject(input)) {
     const validActionsError = isValidNamespaceActions(input, method);
     if (validActionsError) {
       error = validActionsError;
     }
-    const validChainsError = isValidNamespaceChains(input, method);
+    const validChainsError = isValidNamespaceChains(input, method, type);
     if (validChainsError) {
       error = validChainsError;
     }
   } else {
     error = getInternalError(
       "MISSING_OR_INVALID",
-      `${method}, requiredNamespaces should be an object with data`,
+      `${method}, ${type} should be an object with data`,
     );
   }
 
@@ -429,63 +373,122 @@ export function isConformingNamespaces(
   context: string,
 ) {
   let error: ErrorObject = null;
-  const requiredNamespaceKeys = Object.keys(requiredNamespaces);
-  const namespaceKeys = Object.keys(namespaces);
 
-  if (!hasOverlap(requiredNamespaceKeys, namespaceKeys)) {
+  const parsedRequired = parseNamespaces(requiredNamespaces);
+  const parsedApproved = parseApprovedNamespaces(namespaces);
+  const requiredChains = Object.keys(parsedRequired);
+  const approvedChains = Object.keys(parsedApproved);
+
+  const uniqueRequired = filterDuplicateNamespaces(Object.keys(requiredNamespaces));
+  const uniqueApproved = filterDuplicateNamespaces(Object.keys(namespaces));
+  const missingRequiredNamespaces = uniqueRequired.filter(
+    (namespace) => !uniqueApproved.includes(namespace),
+  );
+
+  if (missingRequiredNamespaces.length) {
     error = getInternalError(
       "NON_CONFORMING_NAMESPACES",
-      `${context} namespaces keys don't satisfy requiredNamespaces`,
+      `${context} namespaces keys don't satisfy requiredNamespaces.
+      Required: ${missingRequiredNamespaces.toString()}
+      Received: ${Object.keys(namespaces).toString()}`,
     );
-  } else {
-    requiredNamespaceKeys.forEach((key) => {
-      if (error) return;
-
-      const requiredNamespaceChains = requiredNamespaces[key].chains;
-      const namespaceChains = getAccountsChains(namespaces[key].accounts);
-
-      if (!hasOverlap(requiredNamespaceChains, namespaceChains)) {
-        error = getInternalError(
-          "NON_CONFORMING_NAMESPACES",
-          `${context} namespaces accounts don't satisfy requiredNamespaces chains for ${key}`,
-        );
-      } else if (!hasOverlap(requiredNamespaces[key].methods, namespaces[key].methods)) {
-        error = getInternalError(
-          "NON_CONFORMING_NAMESPACES",
-          `${context} namespaces methods don't satisfy requiredNamespaces methods for ${key}`,
-        );
-      } else if (!hasOverlap(requiredNamespaces[key].events, namespaces[key].events)) {
-        error = getInternalError(
-          "NON_CONFORMING_NAMESPACES",
-          `${context} namespaces events don't satisfy requiredNamespaces events for ${key}`,
-        );
-      } else if (requiredNamespaces[key].extension && !namespaces[key].extension) {
-        error = getInternalError(
-          "NON_CONFORMING_NAMESPACES",
-          `${context} namespaces extension doesn't satisfy requiredNamespaces extension for ${key}`,
-        );
-      } else if (requiredNamespaces[key].extension && namespaces[key].extension) {
-        requiredNamespaces[key].extension?.forEach(({ methods, events, chains }) => {
-          if (error) return;
-          const isOverlap = namespaces[key].extension?.find((namespace) => {
-            const accChains = getAccountsChains(namespace.accounts);
-            return (
-              hasOverlap(chains, accChains) &&
-              hasOverlap(events, namespace.events) &&
-              hasOverlap(methods, namespace.methods)
-            );
-          });
-
-          if (!isOverlap) {
-            error = getInternalError(
-              "NON_CONFORMING_NAMESPACES",
-              `${context} namespaces extension doesn't satisfy requiredNamespaces extension for ${key}`,
-            );
-          }
-        });
-      }
-    });
   }
 
+  if (!hasOverlap(requiredChains, approvedChains)) {
+    error = getInternalError(
+      "NON_CONFORMING_NAMESPACES",
+      `${context} namespaces chains don't satisfy required namespaces.
+      Required: ${requiredChains.toString()}
+      Approved: ${approvedChains.toString()}`,
+    );
+  }
+
+  // validate inline defined chains with approved accounts
+  Object.keys(namespaces).forEach((chain) => {
+    if (!chain.includes(":")) return;
+    if (error) return;
+    const chains = getAccountsChains(namespaces[chain].accounts);
+    if (!chains.includes(chain)) {
+      error = getInternalError(
+        "NON_CONFORMING_NAMESPACES",
+        `${context} namespaces accounts don't satisfy namespace accounts for ${chain}
+        Required: ${chain}
+        Approved: ${chains.toString()}`,
+      );
+    }
+  });
+
+  requiredChains.forEach((chain) => {
+    if (error) return;
+
+    if (!hasOverlap(parsedRequired[chain].methods, parsedApproved[chain].methods)) {
+      error = getInternalError(
+        "NON_CONFORMING_NAMESPACES",
+        `${context} namespaces methods don't satisfy namespace methods for ${chain}`,
+      );
+    } else if (!hasOverlap(parsedRequired[chain].events, parsedApproved[chain].events)) {
+      error = getInternalError(
+        "NON_CONFORMING_NAMESPACES",
+        `${context} namespaces events don't satisfy namespace events for ${chain}`,
+      );
+    }
+  });
+
   return error;
+}
+
+function parseNamespaces(namespaces: ProposalTypes.RequiredNamespaces) {
+  const parsed = {};
+  Object.keys(namespaces).forEach((key) => {
+    // e.g. `eip155:1`
+    const isInlineChainDefinition = key.includes(":");
+
+    if (isInlineChainDefinition) {
+      parsed[key] = namespaces[key];
+    } else {
+      namespaces[key].chains?.forEach((chain) => {
+        parsed[chain] = {
+          methods: namespaces[key].methods,
+          events: namespaces[key].events,
+        };
+      });
+    }
+  });
+  return parsed;
+}
+
+function filterDuplicateNamespaces(namespaces: string[]) {
+  return [
+    ...new Set(
+      namespaces.map((namespace) =>
+        namespace.includes(":") ? namespace.split(":")[0] : namespace,
+      ),
+    ),
+  ];
+}
+
+function parseApprovedNamespaces(namespaces: SessionTypes.Namespaces) {
+  const parsed = {};
+  Object.keys(namespaces).forEach((key) => {
+    const isInlineChainDefinition = key.includes(":");
+    if (isInlineChainDefinition) {
+      parsed[key] = namespaces[key];
+    } else {
+      const chains = getAccountsChains(namespaces[key].accounts);
+      chains?.forEach((chain) => {
+        parsed[chain] = {
+          accounts: namespaces[key].accounts.filter((account: string) =>
+            account.includes(`${chain}:`),
+          ),
+          methods: namespaces[key].methods,
+          events: namespaces[key].events,
+        };
+      });
+    }
+  });
+  return parsed;
+}
+
+export function isValidRequestExpiry(expiry: number, boundaries: { min: number; max: number }) {
+  return isValidNumber(expiry, false) && expiry <= boundaries.max && expiry >= boundaries.min;
 }

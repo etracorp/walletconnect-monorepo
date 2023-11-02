@@ -1,5 +1,4 @@
-import { Logger } from "pino";
-import { generateChildLogger, getLoggerContext } from "@walletconnect/logger";
+import { generateChildLogger, getLoggerContext, Logger } from "@walletconnect/logger";
 import { ICore, IKeyChain } from "@walletconnect/types";
 import { getInternalError, mapToObj, objToMap } from "@walletconnect/utils";
 
@@ -33,7 +32,7 @@ export class KeyChain implements IKeyChain {
   }
 
   get storageKey() {
-    return this.storagePrefix + this.version + "//" + this.name;
+    return this.storagePrefix + this.version + this.core.customStoragePrefix + "//" + this.name;
   }
 
   public has: IKeyChain["has"] = (tag) => {

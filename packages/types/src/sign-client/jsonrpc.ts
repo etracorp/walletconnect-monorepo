@@ -9,8 +9,6 @@ export declare namespace JsonRpcTypes {
   export type DefaultResponse = true | ErrorResponse;
 
   export type WcMethod =
-    | "wc_pairingDelete"
-    | "wc_pairingPing"
     | "wc_sessionPropose"
     | "wc_sessionSettle"
     | "wc_sessionUpdate"
@@ -31,6 +29,8 @@ export declare namespace JsonRpcTypes {
     wc_sessionPropose: {
       relays: RelayerTypes.ProtocolOptions[];
       requiredNamespaces: ProposalTypes.RequiredNamespaces;
+      optionalNamespaces: ProposalTypes.OptionalNamespaces;
+      sessionProperties?: ProposalTypes.SessionProperties;
       proposer: {
         publicKey: string;
         metadata: SignClientTypes.Metadata;
@@ -39,6 +39,10 @@ export declare namespace JsonRpcTypes {
     wc_sessionSettle: {
       relay: RelayerTypes.ProtocolOptions;
       namespaces: SessionTypes.Namespaces;
+      requiredNamespaces: ProposalTypes.RequiredNamespaces;
+      optionalNamespaces: ProposalTypes.OptionalNamespaces;
+      sessionProperties?: ProposalTypes.SessionProperties;
+      pairingTopic: string;
       expiry: number;
       controller: {
         publicKey: string;

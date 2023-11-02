@@ -1,6 +1,5 @@
 import SignClient from "@walletconnect/sign-client";
 import { SessionTypes } from "@walletconnect/types";
-import { IEthereumProvider } from "eip1193-provider";
 
 import {
   RpcProvidersMap,
@@ -9,6 +8,8 @@ import {
   RequestArguments,
   SessionNamespace,
   NamespaceConfig,
+  ConnectParams,
+  IEthereumProvider,
 } from "./misc";
 
 export interface IProvider {
@@ -19,13 +20,15 @@ export interface IProvider {
   request: <T = unknown>(args: RequestParams) => Promise<T>;
   updateNamespace: (args: SessionTypes.Namespace) => void;
   setDefaultChain: (chainId: string, rpcUrl?: string | undefined) => void;
+  getDefaultChain: () => string;
+  requestAccounts: () => string[];
 }
 
 export interface IUniversalProvider extends IEthereumProvider {
   client?: SignClient;
   namespaces?: NamespaceConfig;
   rpcProviders: RpcProviderMap;
-  session: SessionTypes.Struct;
+  session?: SessionTypes.Struct;
   uri: string | undefined;
 
   request: <T = unknown>(args: RequestArguments, chain?: string) => Promise<T>;
@@ -35,4 +38,9 @@ export interface IUniversalProvider extends IEthereumProvider {
     chain?: string,
   ) => void;
   pair: (pairingTopic: string | undefined) => Promise<SessionTypes.Struct>;
+  connect: (opts: ConnectParams) => Promise<SessionTypes.Struct | undefined>;
+  disconnect: () => Promise<void>;
+  cleanupPendingPairings: () => Promise<void>;
+  abortPairingAttempt(): void;
+  setDefaultChain: (chainId: string, rpcUrl?: string | undefined) => void;
 }

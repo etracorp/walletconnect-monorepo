@@ -1,3 +1,4 @@
+import { RelayerTypes } from "@walletconnect/types";
 import { utils } from "ethers";
 
 export const CHAIN_ID = 123;
@@ -24,6 +25,10 @@ export const ACCOUNTS = {
     address: "0x874C1377Aa5a256de7554776e59cf01A5319502C",
     privateKey: "0x6c99734035225d3d34bd3b07a46594f8eb66269454c3f7a4a19ca505f2a46b15",
   },
+  cosmos: {
+    address: "cosmos19tzxudnklnmmr3l5vuhhttue7rkcpt78x0jqxr",
+    privateKey: "e7343d082baa8e390dc7ebd65c891e4b42c044b5bb0cfa43d8cc0769c32c87aa",
+  },
 };
 
 export const TEST_RELAY_URL = process.env.TEST_RELAY_URL
@@ -48,6 +53,8 @@ export const TEST_PROVIDER_OPTS = {
   logger: "error",
   relayUrl: TEST_RELAY_URL,
   metadata: TEST_APP_METADATA,
+  projectId: process.env.TEST_PROJECT_ID,
+  disableProviderPing: true,
 };
 
 export const TEST_WALLET_CLIENT_OPTS = {
@@ -56,19 +63,53 @@ export const TEST_WALLET_CLIENT_OPTS = {
   privateKey: ACCOUNTS.a.privateKey,
   relayUrl: TEST_RELAY_URL,
   metadata: TEST_WALLET_METADATA,
+  projectId: process.env.TEST_PROJECT_ID,
 };
+
+export const EIP155_TEST_METHODS = [
+  "eth_sendTransaction",
+  "eth_signTransaction",
+  "personal_sign",
+  "eth_signTypedData",
+  "wallet_switchEthereumChain",
+];
+
+export const COSMOS_TEST_METHODS = ["cosmos_signDirect", "cosmos_signAmino"];
+export const ELROND_TEST_METHODS = ["erd_signTransaction", "erd_signLoginToken"];
+export const MULTIVERSX_TEST_METHODS = ["multiversx_signTransaction", "multiversx_signMessage"];
 
 export const TEST_NAMESPACES_CONFIG = {
   namespaces: {
     eip155: {
-      methods: [
-        "eth_sendTransaction",
-        "eth_signTransaction",
-        "eth_sign",
-        "personal_sign",
-        "eth_signTypedData",
-      ],
+      methods: EIP155_TEST_METHODS,
       chains: [`eip155:${CHAIN_ID}`, `eip155:${CHAIN_ID_B}`],
+      events: ["chainChanged", "accountsChanged"],
+      rpcMap: {
+        [CHAIN_ID]: RPC_URL,
+        [CHAIN_ID_B]: RPC_URL_B,
+      },
+    },
+    cosmos: {
+      methods: COSMOS_TEST_METHODS,
+      chains: [`cosmos:${CHAIN_ID}`, `cosmos:${CHAIN_ID_B}`],
+      events: ["chainChanged", "accountsChanged"],
+      rpcMap: {
+        [CHAIN_ID]: RPC_URL,
+        [CHAIN_ID_B]: RPC_URL_B,
+      },
+    },
+    elrond: {
+      methods: ELROND_TEST_METHODS,
+      chains: [`elrond:${CHAIN_ID}`, `elrond:${CHAIN_ID_B}`],
+      events: ["chainChanged", "accountsChanged"],
+      rpcMap: {
+        [CHAIN_ID]: RPC_URL,
+        [CHAIN_ID_B]: RPC_URL_B,
+      },
+    },
+    multiversx: {
+      methods: MULTIVERSX_TEST_METHODS,
+      chains: [`multiversx:${CHAIN_ID}`, `multiversx:${CHAIN_ID_B}`],
       events: ["chainChanged", "accountsChanged"],
       rpcMap: {
         [CHAIN_ID]: RPC_URL,
@@ -89,4 +130,54 @@ export const TEST_SIGN_TRANSACTION = {
   to: "0xF0109fC8DF283027b6285cc889F5aA624EaC1F55",
   value: "1000000000",
   gas: 2000000,
+};
+
+export const TEST_EVENTS = ["chainChanged", "accountsChanged"];
+
+export const TEST_ETHEREUM_ADDRESS = "0x3c582121909DE92Dc89A36898633C1aE4790382b";
+
+export const TEST_ETHEREUM_CHAIN = "eip155:1";
+
+export const TEST_GOERLI_CHAIN = "eip155:5";
+
+export const TEST_OPTIMISM_CHAIN = "eip155:10";
+
+export const TEST_ETHEREUM_ACCOUNT = `${TEST_ETHEREUM_CHAIN}:${TEST_ETHEREUM_ADDRESS}`;
+
+export const TEST_GOERLI_ACCOUNT = `${TEST_GOERLI_CHAIN}:${TEST_ETHEREUM_ADDRESS}`;
+
+export const TEST_OPTIMISM_ACCOUNT = `${TEST_OPTIMISM_CHAIN}:${TEST_ETHEREUM_ADDRESS}`;
+
+export const TEST_CHAINS = [TEST_ETHEREUM_CHAIN];
+
+export const TEST_ACCOUNTS = [TEST_ETHEREUM_ACCOUNT];
+
+export const TEST_RELAY_PROTOCOL = "irn";
+
+export const TEST_RELAY_OPTIONS: RelayerTypes.ProtocolOptions = {
+  protocol: TEST_RELAY_PROTOCOL,
+};
+
+export const TEST_REQUIRED_NAMESPACES = {
+  eip155: {
+    methods: EIP155_TEST_METHODS,
+    chains: TEST_CHAINS,
+    events: TEST_EVENTS,
+  },
+};
+
+export const TEST_OPTIONAL_NAMESPACES = {
+  eip155: {
+    methods: EIP155_TEST_METHODS,
+    chains: [TEST_GOERLI_CHAIN, TEST_OPTIMISM_CHAIN],
+    events: TEST_EVENTS,
+  },
+};
+
+export const TEST_NAMESPACES = {
+  [TEST_ETHEREUM_CHAIN]: {
+    methods: EIP155_TEST_METHODS,
+    accounts: [TEST_ETHEREUM_ACCOUNT, TEST_GOERLI_ACCOUNT, TEST_OPTIMISM_ACCOUNT],
+    events: TEST_EVENTS,
+  },
 };

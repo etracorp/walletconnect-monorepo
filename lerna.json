@@ -4,6 +4,5 @@
     "packages/*",
     "providers/*"
   ],
-  "useWorkspaces": true,
-  "version": "2.0.0-rc.2"
+  "version": "2.10.4"
 }

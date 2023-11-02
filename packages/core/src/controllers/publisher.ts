@@ -1,22 +1,27 @@
 import { HEARTBEAT_EVENTS } from "@walletconnect/heartbeat";
-import { RequestArguments } from "@walletconnect/jsonrpc-types";
-import { generateChildLogger, getLoggerContext } from "@walletconnect/logger";
+import { JsonRpcPayload, RequestArguments } from "@walletconnect/jsonrpc-types";
+import { generateChildLogger, getLoggerContext, Logger } from "@walletconnect/logger";
 import { RelayJsonRpc } from "@walletconnect/relay-api";
 import { IPublisher, IRelayer, PublisherTypes, RelayerTypes } from "@walletconnect/types";
 import {
   getRelayProtocolApi,
   getRelayProtocolName,
-  hashMessage,
   isUndefined,
+  createExpiringPromise,
 } from "@walletconnect/utils";
 import { EventEmitter } from "events";
-import { Logger } from "pino";
-import { PUBLISHER_CONTEXT, PUBLISHER_DEFAULT_TTL } from "../constants";
+
+import { PUBLISHER_CONTEXT, PUBLISHER_DEFAULT_TTL, RELAYER_EVENTS } from "../constants";
+import { getBigIntRpcId } from "@walletconnect/jsonrpc-utils";
+import { TEN_SECONDS, toMiliseconds } from "@walletconnect/time";
 
 export class Publisher extends IPublisher {
   public events = new EventEmitter();
   public name = PUBLISHER_CONTEXT;
   public queue = new Map<string, PublisherTypes.Params>();
+
+  private publishTimeout = toMiliseconds(TEN_SECONDS);
+  private needsTransportRestart = false;
 
   constructor(public relayer: IRelayer, public logger: Logger) {
     super(relayer, logger);
@@ -37,11 +42,31 @@ export class Publisher extends IPublisher {
       const relay = getRelayProtocolName(opts);
       const prompt = opts?.prompt || false;
       const tag = opts?.tag || 0;
-      const params = { topic, message, opts: { ttl, relay, prompt, tag } };
-      const hash = hashMessage(message);
-      this.queue.set(hash, params);
-      await this.rpcPublish(topic, message, ttl, relay, prompt, tag);
-      this.onPublish(hash, params);
+      const id = opts?.id || (getBigIntRpcId().toString() as any);
+      const params = { topic, message, opts: { ttl, relay, prompt, tag, id } };
+      // delay adding to queue to avoid cases where heartbeat might pulse right after publish resulting in duplicate publish
+      const queueTimeout = setTimeout(() => this.queue.set(id, params), this.publishTimeout);
+      try {
+        const publish = await createExpiringPromise(
+          this.rpcPublish(topic, message, ttl, relay, prompt, tag, id),
+          this.publishTimeout,
+          "Failed to publish payload, please try again.",
+        );
+        await publish;
+        this.removeRequestFromQueue(id);
+        this.relayer.events.emit(RELAYER_EVENTS.publish, params);
+      } catch (err) {
+        this.logger.debug(`Publishing Payload stalled`);
+        this.needsTransportRestart = true;
+        if (opts?.internal?.throwOnFailedPublish) {
+          // remove the request from the queue so it's not retried automatically
+          this.removeRequestFromQueue(id);
+          throw err;
+        }
+        return;
+      } finally {
+        clearTimeout(queueTimeout);
+      }
       this.logger.debug(`Successfully Published Payload`);
       this.logger.trace({ type: "method", method: "publish", params: { topic, message, opts } });
     } catch (e) {
@@ -76,6 +101,7 @@ export class Publisher extends IPublisher {
     relay: RelayerTypes.ProtocolOptions,
     prompt?: boolean,
     tag?: number,
+    id?: number,
   ) {
     const api = getRelayProtocolApi(relay.protocol);
     const request: RequestArguments<RelayJsonRpc.PublishParams> = {
@@ -87,34 +113,39 @@ export class Publisher extends IPublisher {
         prompt,
         tag,
       },
+      id,
     };
     if (isUndefined(request.params?.prompt)) delete request.params?.prompt;
     if (isUndefined(request.params?.tag)) delete request.params?.tag;
     this.logger.debug(`Outgoing Relay Payload`);
     this.logger.trace({ type: "message", direction: "outgoing", request });
-    return this.relayer.provider.request(request);
+    return this.relayer.request(request);
   }
 
-  private onPublish(hash: string, _params: PublisherTypes.Params) {
-    this.queue.delete(hash);
+  private removeRequestFromQueue(id: string) {
+    this.queue.delete(id);
   }
 
   private checkQueue() {
     this.queue.forEach(async (params) => {
-      const {
-        topic,
-        message,
-        opts: { ttl, relay, prompt, tag },
-      } = params;
-      const hash = hashMessage(message);
-      await this.rpcPublish(topic, message, ttl, relay, prompt, tag);
-      this.onPublish(hash, params);
+      const { topic, message, opts } = params;
+      await this.publish(topic, message, opts);
     });
   }
 
   private registerEventListeners() {
     this.relayer.core.heartbeat.on(HEARTBEAT_EVENTS.pulse, () => {
+      // restart the transport if needed
+      // queue will be processed on the next pulse
+      if (this.needsTransportRestart) {
+        this.needsTransportRestart = false;
+        this.relayer.events.emit(RELAYER_EVENTS.connection_stalled);
+        return;
+      }
       this.checkQueue();
+    });
+    this.relayer.on(RELAYER_EVENTS.message_ack, (event: JsonRpcPayload) => {
+      this.removeRequestFromQueue(event.id.toString());
     });
   }
 }
